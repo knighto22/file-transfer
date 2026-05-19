@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+message FileChunk {
+    string filename = 1;      // 文件名
+    int64 total_size = 2;     // 文件总大小
+    int32 chunk_index = 3;    // 当前块编号
+    int32 total_chunks = 4;   // 总块数
+    bytes data = 5;           // 数据内容
+}
+
+message TransferResponse {
+    int32 chunk_index = 1;    // 确认收到的块编号
+    bool success = 2;         // 是否成功
+}
