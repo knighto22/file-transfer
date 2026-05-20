@@ -1,7 +1,7 @@
 ﻿/**
  * 加密文件传输工具 - 客户端
  * 功能：将文件分块加密后通过socket发送给服务端
- * 支持多线程并发发送和断点续传
+ * 支持多线程并发发送、断点续传、MD5完整性校验和进度条显示
  */
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <iostream>
@@ -17,6 +17,7 @@
 #include <ws2tcpip.h>
 #include "transfer.pb.h"
 #include "crypto.h"
+#include "md5.h"
 #pragma comment(lib, "ws2_32.lib")
 
 const int CHUNK_SIZE = 1024;
@@ -32,7 +33,7 @@ unsigned char iv[16] = {
     '9','0','1','2','3','4','5','6'
 };
 
-std::mutex sendMutex; // 保护socket发送
+std::mutex sendMutex;
 
 void sendMessage(SOCKET sock, const google::protobuf::Message& msg) {
     std::string data;
@@ -52,6 +53,19 @@ std::string recvMessage(SOCKET sock) {
     return buf;
 }
 
+// 显示进度条
+void showProgress(int current, int total) {
+    std::lock_guard<std::mutex> lock(sendMutex);
+    int progress = current * 100 / total;
+    int barWidth = 40;
+    int filled = barWidth * progress / 100;
+    std::cout << "\r[";
+    for (int i = 0; i < barWidth; i++)
+        std::cout << (i < filled ? '#' : '-');
+    std::cout << "] " << progress << "% ("
+        << current << "/" << total << ")" << std::flush;
+}
+
 // 每个线程负责发送一部分块
 void sendChunks(SOCKET sock,
     const std::vector<std::pair<int32_t, std::string>>& chunks,
@@ -69,7 +83,7 @@ void sendChunks(SOCKET sock,
         chunk.set_data(encrypted);
 
         sendMessage(sock, chunk);
-        std::cout << "发送块 " << index + 1 << "/" << totalChunks << std::endl;
+        showProgress(index + 1, totalChunks);
     }
 }
 
@@ -90,7 +104,7 @@ int main() {
     connect(sock, (sockaddr*)&serverAddr, sizeof(serverAddr));
     std::cout << "已连接服务端" << std::endl;
 
-    // 接收server已完成的块编号
+    // 接收server已完成的块编号（断点续传）
     std::set<int32_t> doneChunks;
     int32_t pLen = 0;
     recv(sock, (char*)&pLen, sizeof(pLen), 0);
@@ -155,6 +169,7 @@ int main() {
 
     // 等待所有线程完成
     for (auto& t : threads) t.join();
+    std::cout << std::endl;
 
     // 计时结束
     auto end = std::chrono::high_resolution_clock::now();
@@ -163,6 +178,24 @@ int main() {
 
     std::cout << "发送完成！耗时：" << seconds << " 秒" << std::endl;
     std::cout << "传输速度：" << speedMB << " MB/s" << std::endl;
+
+    // 计算原始文件MD5并发送给server验证
+    std::string fileMd5 = md5File(filename);
+    std::cout << "原始文件 MD5：" << fileMd5 << std::endl;
+
+    int32_t md5Len = htonl(fileMd5.size());
+    send(sock, (char*)&md5Len, sizeof(md5Len), 0);
+    send(sock, fileMd5.c_str(), fileMd5.size(), 0);
+
+    // 接收server的验证结果
+    char resultBuf[4] = {};
+    recv(sock, resultBuf, sizeof(resultBuf), 0);
+    if (std::string(resultBuf, 2) == "OK") {
+        std::cout << "文件完整性验证通过！" << std::endl;
+    }
+    else {
+        std::cout << "警告：文件完整性验证失败！" << std::endl;
+    }
 
     closesocket(sock);
     WSACleanup();
