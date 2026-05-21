@@ -2,6 +2,7 @@
  * 加密文件传输工具 - 客户端
  * 功能：将文件分块加密后通过socket发送给服务端
  * 支持多线程并发发送、断点续传、MD5完整性校验和进度条显示
+ * 用法：client.exe [服务端IP]，不传参数默认连接127.0.0.1
  */
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <iostream>
@@ -53,7 +54,6 @@ std::string recvMessage(SOCKET sock) {
     return buf;
 }
 
-// 显示进度条
 void showProgress(int current, int total) {
     std::lock_guard<std::mutex> lock(sendMutex);
     int progress = current * 100 / total;
@@ -66,7 +66,6 @@ void showProgress(int current, int total) {
         << current << "/" << total << ")" << std::flush;
 }
 
-// 每个线程负责发送一部分块
 void sendChunks(SOCKET sock,
     const std::vector<std::pair<int32_t, std::string>>& chunks,
     int32_t totalChunks,
@@ -87,8 +86,26 @@ void sendChunks(SOCKET sock,
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     std::cout << "当前目录：" << std::filesystem::current_path() << std::endl;
+
+    // 从命令行参数获取IP，默认本机
+    std::string serverIp = "127.0.0.1";
+    if (argc >= 2) {
+        serverIp = argv[1];
+    }
+    else {
+        // 尝试从config.txt读取IP
+        std::ifstream config("config.txt");
+        if (config) {
+            std::getline(config, serverIp);
+            serverIp.erase(serverIp.find_last_not_of(" \r\n") + 1); // 去掉多余空格换行
+            std::cout << "从config.txt读取IP：" << serverIp << std::endl;
+        }
+        else {
+            std::cout << "未找到config.txt，使用默认IP：" << serverIp << std::endl;
+        }
+    }
 
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -100,9 +117,13 @@ int main() {
     sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(8888);
-    inet_pton(AF_INET, "127.0.0.1", &serverAddr.sin_addr);
-    connect(sock, (sockaddr*)&serverAddr, sizeof(serverAddr));
-    std::cout << "已连接服务端" << std::endl;
+    inet_pton(AF_INET, serverIp.c_str(), &serverAddr.sin_addr);
+
+    if (connect(sock, (sockaddr*)&serverAddr, sizeof(serverAddr)) != 0) {
+        std::cerr << "连接失败，请检查IP地址和网络" << std::endl;
+        return 1;
+    }
+    std::cout << "已连接服务端：" << serverIp << std::endl;
 
     // 接收server已完成的块编号（断点续传）
     std::set<int32_t> doneChunks;
@@ -122,7 +143,7 @@ int main() {
     std::string filename = "test.txt";
     std::ifstream file(filename, std::ios::binary);
     if (!file) {
-        std::cerr << "打开文件失败" << std::endl;
+        std::cerr << "打开文件失败，请确认 test.txt 在当前目录" << std::endl;
         return 1;
     }
 
